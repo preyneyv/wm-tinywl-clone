@@ -14,6 +14,7 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_xdg_shell.h>
 #include <wayland-server-core.h>
 #include <wayland-util.h>
 
@@ -28,6 +29,11 @@ struct twl_clone_server {
 	struct wlr_allocator *allocator;
 	struct wlr_scene *scene;
 	struct wlr_scene_output_layout *scene_layout;
+
+	struct wlr_xdg_shell *xdg_shell;
+	struct wl_listener new_xdg_toplevel;
+	struct wl_listener new_xdg_popup;
+	struct wl_list toplevels;
 
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_mgr;
@@ -59,12 +65,60 @@ struct twl_clone_output {
 	struct wl_listener destroy;
 };
 
+struct twl_clone_toplevel {
+	struct wl_list link;
+	struct twl_clone_server *server;
+	struct wlr_xdg_toplevel *xdg_toplevel;
+	struct wlr_scene_tree *scene_tree;
+
+	struct wl_listener map;
+	struct wl_listener unmap;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+};
+
+struct twl_clone_popup {
+	struct wlr_xdg_popup *xdg_popup;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+};
+
 struct twl_clone_keyboard {
 	struct wl_list link;
 
 	struct twl_clone_server *server;
 	struct wlr_keyboard *wlr_keyboard;
 };
+
+static void focus_toplevel(struct twl_clone_toplevel *toplevel, struct wlr_surface *surface) {
+	if (toplevel == NULL) return;
+	struct twl_clone_server *server = toplevel->server;
+	struct wlr_seat *seat = server->seat;
+	struct wlr_surface *prev_surface = seat->keyboard_state.focused_surface;
+	if (prev_surface == surface) {
+		// alread focused
+		return;
+	}
+	if (prev_surface) {
+		struct wlr_xdg_toplevel *prev_toplevel = wlr_xdg_toplevel_try_from_wlr_surface(prev_surface);
+		if (prev_toplevel != NULL) {
+			wlr_xdg_toplevel_set_activated(prev_toplevel, false);
+		}
+	}
+
+	struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(seat);
+	wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
+	wl_list_remove(&toplevel->link);
+	wl_list_insert(&server->toplevels, &toplevel->link);
+	wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
+
+	if (keyboard != NULL) {
+		wlr_seat_keyboard_notify_enter(seat, toplevel->xdg_toplevel->base->surface,
+			keyboard->keycodes, keyboard->num_keycodes, &keyboard->modifiers);
+	}
+
+}
+
 
 static void output_frame(struct wl_listener *listener, void *data) {
 	// Called every time an output wants to draw a frame (usually at output refresh rate).
@@ -260,6 +314,72 @@ static void seat_request_set_selection(struct wl_listener *listener, void *data)
 	//                                            ^^^          ^^^ voodoo
 }
 
+
+static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
+	struct twl_clone_toplevel *toplevel = wl_container_of(listener, toplevel, map);
+
+	wl_list_insert(&toplevel->server->toplevels, &toplevel->link);
+	focus_toplevel(toplevel, toplevel->xdg_toplevel->base->surface);
+}
+
+// TODO: PICK UP FROM HERE
+static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {} 
+static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {} 
+static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {} 
+
+static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
+	struct twl_clone_server *server = wl_container_of(listener, server, new_xdg_toplevel);
+	struct wlr_xdg_toplevel *xdg_toplevel = data;
+
+	struct twl_clone_toplevel *toplevel = calloc(1, sizeof(*toplevel));
+	toplevel->server = server;
+	toplevel->xdg_toplevel = xdg_toplevel;
+	toplevel->scene_tree = wlr_scene_xdg_surface_create(
+			&toplevel->server->scene->tree, xdg_toplevel->base);
+	toplevel->scene_tree->node.data = toplevel;
+	xdg_toplevel->base->data = toplevel->scene_tree;
+
+	toplevel->map.notify = xdg_toplevel_map;
+	wl_signal_add(&xdg_toplevel->base->surface->events.map, &toplevel->map);
+	toplevel->unmap.notify = xdg_toplevel_unmap;
+	wl_signal_add(&xdg_toplevel->base->surface->events.unmap, &toplevel->unmap);
+	toplevel->commit.notify = xdg_toplevel_commit;
+	wl_signal_add(&xdg_toplevel->base->surface->events.commit, &toplevel->commit);
+	toplevel->destroy.notify = xdg_toplevel_destroy;
+	wl_signal_add(&xdg_toplevel->base->surface->events.destroy, &toplevel->destroy);
+}
+
+static void xdg_popup_commit(struct wl_listener *listener, void *data) {
+	struct twl_clone_popup *popup = wl_container_of(listener, popup, commit);
+	if (popup->xdg_popup->base->initial_commit) {
+		wlr_xdg_surface_schedule_configure(popup->xdg_popup->base);
+	}
+}
+
+static void xdg_popup_destroy(struct wl_listener *listener, void *data) {
+	struct twl_clone_popup *popup = wl_container_of(listener, popup, destroy);
+
+	wl_list_remove(&popup->commit.link);
+	wl_list_remove(&popup->destroy.link);
+	free(popup);
+}
+
+static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
+	struct wlr_xdg_popup *xdg_popup = data;
+	struct twl_clone_popup *popup = calloc(1, sizeof(*popup));
+	popup->xdg_popup = xdg_popup;
+
+	struct wlr_xdg_surface *parent = wlr_xdg_surface_try_from_wlr_surface(xdg_popup->parent);
+	struct wlr_scene_tree *parent_tree = parent->data;
+	xdg_popup->base->data = wlr_scene_xdg_surface_create(parent_tree, xdg_popup->base);
+
+	popup->commit.notify = xdg_popup_commit;
+	wl_signal_add(&xdg_popup->base->surface->events.commit, &popup->commit);
+
+	popup->destroy.notify = xdg_popup_destroy;
+	wl_signal_add(&xdg_popup->events.destroy, &popup->destroy);
+}
+
 int main(int argc, char *argv[]) {
 	wlr_log_init(WLR_DEBUG, NULL);
 	
@@ -319,13 +439,20 @@ int main(int argc, char *argv[]) {
 	server.new_output.notify = server_new_output;
 	wl_signal_add(&server.backend->events.new_output, &server.new_output);
 
-	// TODO: Create scene graph to handle windows
+	// Create scene graph to handle windows
 	server.scene = wlr_scene_create();
 	server.scene_layout = wlr_scene_attach_output_layout(server.scene, server.output_layout);
 
 	// TODO: Initialize xdg-shellv3 (used for application windows)
+	wl_list_init(&server.toplevels);
+	server.xdg_shell = wlr_xdg_shell_create(server.wl_display, 3);
+	server.new_xdg_toplevel.notify = server_new_xdg_toplevel;
+	wl_signal_add(&server.xdg_shell->events.new_toplevel, &server.new_xdg_toplevel);
+	server.new_xdg_popup.notify = server_new_xdg_popup;
+	wl_signal_add(&server.xdg_shell->events.new_popup, &server.new_xdg_popup);
+	
 
-	// TODO: Add cursor support 
+	// TODO: Add cursor support in a way that doesnt segfault pls and thank 
 	
 	server.cursor = wlr_cursor_create();
 	wlr_cursor_attach_output_layout(server.cursor, server.output_layout);
