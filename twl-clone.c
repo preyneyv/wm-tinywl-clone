@@ -26,19 +26,31 @@ struct twl_clone_server {
 };
 
 static void server_new_output(struct wl_listener *listener, void *data) {
-	wlr_log(WLR_INFO, "omg hey its a new output!");
-	// // This event is triggered when a new output is available.
-	// struct twl_clone_server *server = wl_container_of(listener, server, new_output);
-	// struct wlr_output *wlr_output = data;
+	// wlr_log(WLR_INFO, "omg hey its a new output!");
+	// This event is triggered when a new output is available.
+	struct twl_clone_server *server = wl_container_of(listener, server, new_output);
+	struct wlr_output *wlr_output = data;
 
-	// // Use the allocator and renderer from server.
-	// wlr_output_init_render(wlr_output, server->allocator, server->renderer);
+	// Use the allocator and renderer from server.
+	wlr_output_init_render(wlr_output, server->allocator, server->renderer);
 
-	// struct wlr_output_state state;
-	// wlr_output_state_init(&state);
-	// wlr_output_state_set_enabled(&state, true);
+	// Enable the output (it may be off by default)
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	wlr_output_state_set_enabled(&state, true);
 
+	// Pick the monitor-preferred mode (w/h/refresh)
+	struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
+	if (mode != NULL) {
+		wlr_output_state_set_mode(&state, mode);
+	}
+
+	wlr_output_commit_state(wlr_output, &state);
+	wlr_output_state_finish(&state);
 	
+	struct wlr_output_layout_output *l_output = wlr_output_layout_add_auto(server->output_layout, wlr_output);
+	// struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
+	// wlr_scene_output_layout_add_output(server->scene_layout, l_output, scene_output);
 }
 
 int main(int argc, char *argv[]) {
