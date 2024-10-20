@@ -9,10 +9,13 @@ CFLAGS+=$(CFLAGS_PKG_CONFIG)
 LIBS!=$(PKG_CONFIG) --libs $(PKGS)
 
 WLROOTS_B=/root/projects/wlroots-b/usr/local
-CFLAGS+=-I$(WLROOTS_B)/include
+CFLAGS+=-I$(WLROOTS_B)/include/wlroots-0.19
 LIBS+=-L$(WLROOTS_B)/lib -lwlroots-0.19
 
 all: twl-clone
+
+run: twl-clone
+	LD_LIBRARY_PATH=$(WLROOTS_B)/lib ./twl-clone
 
 xdg-shell-protocol.h:
 	$(WAYLAND_SCANNER) server-header \
@@ -27,5 +30,5 @@ twl-clone: twl-clone.o
 clean:
 	rm -f twl-clone twl-clone.o xdg-shell-protocol-h
 
-.PHONY: all clean
+.PHONY: all clean run
 
