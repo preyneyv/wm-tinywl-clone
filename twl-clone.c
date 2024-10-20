@@ -6,6 +6,7 @@
 #include <wlr/backend.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/pass.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_data_device.h>
@@ -24,6 +25,39 @@ struct twl_clone_server {
 	struct wl_list outputs;
 	struct wl_listener new_output;
 };
+
+struct twl_clone_output {
+	// what sorcery is this???
+	struct wl_list link;
+	struct wlr_output *wlr_output;
+	struct twl_clone_server *server;
+	struct wl_listener frame;
+};
+
+static void output_frame(struct wl_listener *listener, void *data) {
+	// Called every time an output wants to draw a frame (usually at output refresh rate).
+	struct twl_clone_output *output = wl_container_of(listener, output, frame);
+	struct wlr_output *wlr_output = output->wlr_output;
+
+	wlr_log(WLR_INFO, "frame");
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	struct wlr_render_pass *pass = wlr_output_begin_render_pass(wlr_output, &state, NULL);
+	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+		.box = { .width = wlr_output->width, .height = wlr_output->height },
+		.color = {
+			.r = .5f,
+			.g = .8f,
+			.b = .3f,
+			.a = 1.0f,
+		},
+	});
+
+	wlr_render_pass_submit(pass);
+
+	wlr_output_commit_state(wlr_output, &state);
+	wlr_output_state_finish(&state);
+}
 
 static void server_new_output(struct wl_listener *listener, void *data) {
 	// wlr_log(WLR_INFO, "omg hey its a new output!");
@@ -47,7 +81,22 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 
 	wlr_output_commit_state(wlr_output, &state);
 	wlr_output_state_finish(&state);
-	
+
+	// Create our state struct for the output.
+	struct twl_clone_output *output = calloc(1, sizeof(*output));
+	output->wlr_output = wlr_output;
+	output->server = server;
+
+	// Listen to frame events (request to draw)
+	output->frame.notify = output_frame;
+	wl_signal_add(&wlr_output->events.frame, &output->frame);
+
+	// TODO: Add other events (state request, destroy);
+
+	wl_list_insert(&server->outputs, &output->link);
+
+
+
 	struct wlr_output_layout_output *l_output = wlr_output_layout_add_auto(server->output_layout, wlr_output);
 	// struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
 	// wlr_scene_output_layout_add_output(server->scene_layout, l_output, scene_output);
