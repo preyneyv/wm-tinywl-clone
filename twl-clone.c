@@ -29,9 +29,13 @@ struct twl_clone_server {
 struct twl_clone_output {
 	// what sorcery is this???
 	struct wl_list link;
+
 	struct wlr_output *wlr_output;
 	struct twl_clone_server *server;
+
 	struct wl_listener frame;
+	struct wl_listener request_state;
+	struct wl_listener destroy;
 };
 
 static void output_frame(struct wl_listener *listener, void *data) {
@@ -39,6 +43,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
 	struct twl_clone_output *output = wl_container_of(listener, output, frame);
 	struct wlr_output *wlr_output = output->wlr_output;
 
+	// TODO: scene graph
 	wlr_log(WLR_INFO, "frame");
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
@@ -57,6 +62,23 @@ static void output_frame(struct wl_listener *listener, void *data) {
 
 	wlr_output_commit_state(wlr_output, &state);
 	wlr_output_state_finish(&state);
+}
+
+static void output_request_state(struct wl_listener *listener, void *data) {
+	// Handle requests to update the output state (like resize)
+	struct twl_clone_output *output = wl_container_of(listener, output, request_state);
+	const struct wlr_output_event_request_state *event = data;
+	wlr_output_commit_state(output->wlr_output, event->state);
+}
+
+static void output_destroy(struct wl_listener *listener, void *data) {
+	struct twl_clone_output *output = wl_container_of(listener, output, destroy);
+
+	wl_list_remove(&output->frame.link);
+	wl_list_remove(&output->request_state.link);
+	wl_list_remove(&output->destroy.link);
+	wl_list_remove(&output->link);
+	free(output);
 }
 
 static void server_new_output(struct wl_listener *listener, void *data) {
@@ -91,13 +113,19 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	output->frame.notify = output_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
 
-	// TODO: Add other events (state request, destroy);
+	// Listen to state update events (WL/X11 resize)
+	output->request_state.notify = output_request_state;
+	wl_signal_add(&wlr_output->events.request_state, &output->request_state);
+
+	// Listen to destroy event (disconnection)
+	output->destroy.notify = output_destroy;
+	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
 
 	wl_list_insert(&server->outputs, &output->link);
 
 
 
-	struct wlr_output_layout_output *l_output = wlr_output_layout_add_auto(server->output_layout, wlr_output);
+	// struct wlr_output_layout_output *l_output = wlr_output_layout_add_auto(server->output_layout, wlr_output);
 	// struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
 	// wlr_scene_output_layout_add_output(server->scene_layout, l_output, scene_output);
 }
