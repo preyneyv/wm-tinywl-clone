@@ -5,6 +5,9 @@ This project is a hand-written clone of [TinyWL](https://gitlab.freedesktop.org/
 
 ## Running It
 
-You'll need a copy of wlroots-0.19 built and set up. Modify the paths in `Makefile` to match where you have it installed to, then simply run `make run`
+You'll need a copy of wlroots-0.19 built and set up. Depending on how you're doing this, you may want to set your `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` variables. Refer to `.env` for an example, if required.
 
+```console
+$ . .env
+$ make run
 ```
