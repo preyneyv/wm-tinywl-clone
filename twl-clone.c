@@ -20,6 +20,8 @@
 
 enum twl_clone_cursor_mode {
 	TWL_CLONE_CURSOR_PASSTHROUGH,
+	TWL_CLONE_CURSOR_MOVE,
+	TWL_CLONE_CURSOR_RESIZE,
 };
 
 struct twl_clone_server {
@@ -39,6 +41,8 @@ struct twl_clone_server {
 	struct wlr_xcursor_manager *cursor_mgr;
 	struct wl_listener cursor_motion;
 	struct wl_listener cursor_motion_absolute;
+	struct wl_listener cursor_button;
+	struct wl_listener cursor_axis;
 	struct wl_listener cursor_frame;
 
 	struct wlr_seat *seat;
@@ -90,6 +94,32 @@ struct twl_clone_keyboard {
 	struct twl_clone_server *server;
 	struct wlr_keyboard *wlr_keyboard;
 };
+
+static struct twl_clone_toplevel *desktop_toplevel_at(
+		struct twl_clone_server *server, double lx, double ly,
+		struct wlr_surface **surface, double *sx, double *sy) {
+	struct wlr_scene_node *node = wlr_scene_node_at(
+		&server->scene->tree.node, lx, ly, sx, sy);
+	if (node == NULL || node->type != WLR_SCENE_NODE_BUFFER) {
+		// TODO: what are the other variants for?
+		return NULL;
+	}
+	struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
+	struct wlr_scene_surface *scene_surface = 
+		wlr_scene_surface_try_from_buffer(scene_buffer);
+	if (!scene_surface) {
+		return NULL;
+	}
+
+	// THIS SURFACE can be any window of an application. we must find its toplevel
+	*surface = scene_surface->surface;
+	struct wlr_scene_tree *tree = node->parent;
+	while (tree != NULL && tree->node.data == NULL) {
+		tree = tree->node.parent;
+	}
+	return tree->node.data;
+
+}
 
 static void focus_toplevel(struct twl_clone_toplevel *toplevel, struct wlr_surface *surface) {
 	if (toplevel == NULL) return;
@@ -238,11 +268,39 @@ static void reset_cursor_mode(struct twl_clone_server *server) {
 }
 
 
+static void process_cursor_move(struct twl_clone_server *server, uint32_t time) {
+
+}
+
+static void process_cursor_resize(struct twl_clone_server *server, uint32_t time) {
+
+}
+
 static void process_cursor_motion(struct twl_clone_server *server, uint32_t time) {
+	if (server->cursor_mode == TWL_CLONE_CURSOR_MOVE) {
+		process_cursor_move(server, time);
+		return;
+	} else if (server->cursor_mode == TWL_CLONE_CURSOR_RESIZE) {
+		process_cursor_resize(server, time);
+		return;
+	}
+
+	double surface_x, surface_y;
 	struct wlr_seat *seat = server->seat;
-	// TODO: proxy events into child surface
-	wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
-	wlr_seat_pointer_clear_focus(seat);
+	struct wlr_surface *surface = NULL;
+	struct twl_clone_toplevel *toplevel = desktop_toplevel_at(server,
+			server->cursor->x, server->cursor->y, &surface, &surface_x, &surface_y);
+	if (!toplevel) {
+		// we're on the desktop!!!
+		wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+	}
+	
+	if (surface) {
+		wlr_seat_pointer_notify_enter(seat, surface, surface_x, surface_y);
+		wlr_seat_pointer_notify_motion(seat, time, surface_x, surface_y);
+	} else {
+		wlr_seat_pointer_clear_focus(seat);
+	}
 }
 
 static void server_cursor_motion(struct wl_listener *listener, void *data) {
@@ -253,6 +311,7 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
 	process_cursor_motion(server, event->time_msec);
 }
+
 static void server_cursor_motion_absolute(struct wl_listener *listener, void *data) {
 	// Triggered whenever an absolute motion event happens (LIKE IN A WAYLAND BACKEND!!!)
 	struct twl_clone_server *server = wl_container_of(listener, server, cursor_motion_absolute);
@@ -260,6 +319,33 @@ static void server_cursor_motion_absolute(struct wl_listener *listener, void *da
 
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
 	process_cursor_motion(server, event->time_msec);
+}
+
+static void server_cursor_button(struct wl_listener *listener, void *data) {
+	struct twl_clone_server *server = wl_container_of(listener, server, cursor_button);
+	struct wlr_pointer_button_event *event = data;
+
+	// TODO: who does this inform? why do WE have to call it?
+	wlr_seat_pointer_notify_button(server->seat, 
+			event->time_msec, event->button, event->state);
+	double sx, sy;
+	struct wlr_surface *surface = NULL;
+	struct twl_clone_toplevel *toplevel = desktop_toplevel_at(server,
+			server->cursor->x, server->cursor->y, &surface, &sx, &sy);
+	if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		reset_cursor_mode(server);
+	} else {
+		focus_toplevel(toplevel, surface);
+	}
+
+}
+
+static void server_cursor_axis(struct wl_listener *listener, void *data) {
+	struct twl_clone_server *server = wl_container_of(listener, server, cursor_axis);
+	struct wlr_pointer_axis_event *event = data;
+	wlr_seat_pointer_notify_axis(server->seat,
+			event->time_msec, event->orientation, event->delta,
+			event->delta_discrete, event->source, event->relative_direction);
 }
 
 static void server_cursor_frame(struct wl_listener *listener, void *data) {
@@ -503,10 +589,15 @@ int main(int argc, char *argv[]) {
 	server.cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
 
 	server.cursor_mode = TWL_CLONE_CURSOR_PASSTHROUGH;
+	
 	server.cursor_motion.notify = server_cursor_motion;
 	wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
 	server.cursor_motion_absolute.notify = server_cursor_motion_absolute;
 	wl_signal_add(&server.cursor->events.motion_absolute, &server.cursor_motion_absolute);
+	server.cursor_button.notify = server_cursor_button;
+	wl_signal_add(&server.cursor->events.button, &server.cursor_button);
+	server.cursor_axis.notify = server_cursor_axis;
+	wl_signal_add(&server.cursor->events.axis, &server.cursor_axis);
 	server.cursor_frame.notify = server_cursor_frame;
 	wl_signal_add(&server.cursor->events.frame, &server.cursor_frame);
 
