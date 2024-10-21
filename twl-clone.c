@@ -52,6 +52,7 @@ struct twl_clone_server {
 	struct wl_list keyboards;
 	enum twl_clone_cursor_mode cursor_mode;
 	struct twl_clone_toplevel *grabbed_toplevel;
+	double grab_x, grab_y;
 
 	struct wlr_output_layout *output_layout;
 	struct wl_list outputs;
@@ -80,6 +81,11 @@ struct twl_clone_toplevel {
 	struct wl_listener unmap;
 	struct wl_listener commit;
 	struct wl_listener destroy;
+
+	struct wl_listener request_move;
+	struct wl_listener request_resize;
+	struct wl_listener request_maximize;
+	struct wl_listener request_fullscreen;
 };
 
 struct twl_clone_popup {
@@ -269,6 +275,10 @@ static void reset_cursor_mode(struct twl_clone_server *server) {
 
 
 static void process_cursor_move(struct twl_clone_server *server, uint32_t time) {
+	struct twl_clone_toplevel *toplevel = server->grabbed_toplevel;
+	wlr_scene_node_set_position(&toplevel->scene_tree->node,
+		server->cursor->x - server->grab_x,
+		server->cursor->y - server->grab_y);
 
 }
 
@@ -456,6 +466,33 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	free(toplevel);
 } 
 
+static void begin_interactive(struct twl_clone_toplevel *toplevel,
+		enum twl_clone_cursor_mode mode, uint32_t edges) {
+	// interactive resizing
+	struct twl_clone_server *server = toplevel->server;
+
+	server->grabbed_toplevel = toplevel;
+	server->cursor_mode = mode;
+
+	if (mode == TWL_CLONE_CURSOR_MOVE) {
+		server->grab_x = server->cursor->x - toplevel->scene_tree->node.x;
+		server->grab_y = server->cursor->y - toplevel->scene_tree->node.y;
+	} else {
+		wlr_log(WLR_ERROR, "LOL SORRY CANT DO THAT YET");
+	}
+}
+
+static void xdg_toplevel_request_move(
+		struct wl_listener *listener, void *data) {
+	struct twl_clone_toplevel *toplevel = wl_container_of(listener, toplevel, request_move);
+	begin_interactive(toplevel, TWL_CLONE_CURSOR_MOVE, 0);
+}
+
+static void xdg_toplevel_request_resize(struct wl_listener *listener, void *data) {}
+static void xdg_toplevel_request_maximize(struct wl_listener *listener, void *data) {}
+static void xdg_toplevel_request_fullscreen(struct wl_listener *listener, void *data) {}
+
+
 static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	struct twl_clone_server *server = wl_container_of(listener, server, new_xdg_toplevel);
 	struct wlr_xdg_toplevel *xdg_toplevel = data;
@@ -468,6 +505,7 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	toplevel->scene_tree->node.data = toplevel;
 	xdg_toplevel->base->data = toplevel->scene_tree;
 
+	// system events
 	toplevel->map.notify = xdg_toplevel_map;
 	wl_signal_add(&xdg_toplevel->base->surface->events.map, &toplevel->map);
 	toplevel->unmap.notify = xdg_toplevel_unmap;
@@ -476,6 +514,16 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	wl_signal_add(&xdg_toplevel->base->surface->events.commit, &toplevel->commit);
 	toplevel->destroy.notify = xdg_toplevel_destroy;
 	wl_signal_add(&xdg_toplevel->base->surface->events.destroy, &toplevel->destroy);
+
+	// interaction events
+	toplevel->request_move.notify = xdg_toplevel_request_move;
+	wl_signal_add(&xdg_toplevel->events.request_move, &toplevel->request_move);
+	toplevel->request_resize.notify = xdg_toplevel_request_resize;
+	wl_signal_add(&xdg_toplevel->events.request_resize, &toplevel->request_resize);
+	toplevel->request_maximize.notify = xdg_toplevel_request_maximize;
+	wl_signal_add(&xdg_toplevel->events.request_maximize, &toplevel->request_maximize);
+	toplevel->request_fullscreen.notify = xdg_toplevel_request_fullscreen;
+	wl_signal_add(&xdg_toplevel->events.request_fullscreen, &toplevel->request_fullscreen);
 }
 
 static void xdg_popup_commit(struct wl_listener *listener, void *data) {
