@@ -134,34 +134,34 @@ static void output_frame(struct wl_listener *listener, void *data) {
 
 	wlr_scene_output_commit(scene_output, NULL);
 
-	struct wlr_output_state state;
-	wlr_output_state_init(&state);
-	struct wlr_render_pass *pass = wlr_output_begin_render_pass(wlr_output, &state, NULL);
+	// struct wlr_output_state state;
+	// wlr_output_state_init(&state);
+	// struct wlr_render_pass *pass = wlr_output_begin_render_pass(wlr_output, &state, NULL);
 
-	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
-		.box = { .width = wlr_output->width, .height = wlr_output->height, },
-		.color = {
-			.r = .2f,
-			.g = .2f,
-			.b = .3f,
-			.a = 1.0f,
-		},
-	});
-	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
-		.box = { .x = output->server->cursor->x, .y = output->server->cursor->y, 
-			 .width = 4.f, .height = 4.f, },
-		.color = {
-			.r = .5f,
-			.g = .8f,
-			.b = .3f,
-			.a = 1.0f,
-		},
-	});
+	// wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+	// 	.box = { .width = wlr_output->width, .height = wlr_output->height, },
+	// 	.color = {
+	// 		.r = .2f,
+	// 		.g = .2f,
+	// 		.b = .3f,
+	// 		.a = 1.0f,
+	// 	},
+	// });
+	// wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+	// 	.box = { .x = output->server->cursor->x, .y = output->server->cursor->y, 
+	// 		 .width = 4.f, .height = 4.f, },
+	// 	.color = {
+	// 		.r = .5f,
+	// 		.g = .8f,
+	// 		.b = .3f,
+	// 		.a = 1.0f,
+	// 	},
+	// });
 
-	wlr_render_pass_submit(pass);
+	// wlr_render_pass_submit(pass);
 
-	wlr_output_commit_state(wlr_output, &state);
-	wlr_output_state_finish(&state);
+	// wlr_output_commit_state(wlr_output, &state);
+	// wlr_output_state_finish(&state);
 
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -258,17 +258,13 @@ static void server_cursor_motion_absolute(struct wl_listener *listener, void *da
 	struct twl_clone_server *server = wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
 
-	// printf("a pos %f, %f\n", event->x, event->y);
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
-
 	process_cursor_motion(server, event->time_msec);
 }
 
 static void server_cursor_frame(struct wl_listener *listener, void *data) {
 	// Triggered when a pointer emits a frame event
 	struct twl_clone_server *server = wl_container_of(listener ,server, cursor_frame);
-	// wlr_log(WLR_INFO, "cursor frame\n");
-	printf("cursor frame\n");
 	wlr_seat_pointer_notify_frame(server->seat);
 }
 
@@ -527,6 +523,12 @@ int main(int argc, char *argv[]) {
 	wl_signal_add(&server.seat->events.request_set_selection, &server.request_set_selection);
 
 
+	const char *socket = wl_display_add_socket_auto(server.wl_display);
+	if (!socket) {
+		wlr_backend_destroy(server.backend);
+		return 1;
+	}
+
 	// Start the backend
 	if (!wlr_backend_start(server.backend)) {
 		wlr_backend_destroy(server.backend);
@@ -534,10 +536,15 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	
+	setenv("WAYLAND_DISPLAY", socket, true);
+	if (startup_cmd) {
+		if (fork() == 0) {
+			execl("/bin/sh", "/bin/sh", "-c", startup_cmd, (void *)NULL);
+		}
+	}
 
 	// Start the event loop
-	wlr_log(WLR_INFO, "STARTINGGGGG");
+	wlr_log(WLR_INFO, "Running wayland compositor on WAYLAND_DISPLAY=%s", socket);
 	wl_display_run(server.wl_display);
 
 	
