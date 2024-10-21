@@ -1,3 +1,7 @@
+https://github.com/user-attachments/assets/9315c23a-0185-4fdc-94f8-1820fa28418a
+
+*Firefox in the custom WM! Super slow because my poor MBP M1 is emulating/virtualizing x64 Arch for this. However, it undeniably works.*
+
 # TinyWL Clone
 
 This project is a hand-written clone of [TinyWL](https://gitlab.freedesktop.org/wlroots/wlroots/-/tree/master/tinywl) (CC0). The primary objective of this exercise is for me to understand how Wayland works (so I can finally get back to [spatial-wl](https://www.github.com/preyneyv/spatial-wl)!)
