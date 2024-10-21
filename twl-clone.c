@@ -252,23 +252,16 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 
 	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
 	process_cursor_motion(server, event->time_msec);
-	// wlr_log(WLR_INFO, "r pos %f, %f\n", event->delta_x, event->delta_y);
-	printf("r pos %f, %f\n", event->delta_x, event->delta_y);
-	printf("a pos %f, %f\n", server->cursor->x, server->cursor->y);
-	// TODO: actually move the cursor maybe
 }
 static void server_cursor_motion_absolute(struct wl_listener *listener, void *data) {
 	// Triggered whenever an absolute motion event happens (LIKE IN A WAYLAND BACKEND!!!)
-	struct twl_clone_server *server = wl_container_of(listener, server, cursor_motion);
+	struct twl_clone_server *server = wl_container_of(listener, server, cursor_motion_absolute);
 	struct wlr_pointer_motion_absolute_event *event = data;
 
-	printf("a pos %f, %f\n", event->x, event->y);
-
+	// printf("a pos %f, %f\n", event->x, event->y);
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
 
-	// wlr_log(WLR_INFO, "a pos %f, %f\n", event->x, event->y);
-	// process_cursor_motion(server, event->time_msec);
-	// TODO: actually move the cursor maybe
+	process_cursor_motion(server, event->time_msec);
 }
 
 static void server_cursor_frame(struct wl_listener *listener, void *data) {
@@ -516,8 +509,8 @@ int main(int argc, char *argv[]) {
 	server.cursor_mode = TWL_CLONE_CURSOR_PASSTHROUGH;
 	server.cursor_motion.notify = server_cursor_motion;
 	wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
-	// server.cursor_motion_absolute.notify = server_cursor_motion_absolute;
-	// wl_signal_add(&server.cursor->events.motion_absolute, &server.cursor_motion_absolute);
+	server.cursor_motion_absolute.notify = server_cursor_motion_absolute;
+	wl_signal_add(&server.cursor->events.motion_absolute, &server.cursor_motion_absolute);
 	server.cursor_frame.notify = server_cursor_frame;
 	wl_signal_add(&server.cursor->events.frame, &server.cursor_frame);
 
