@@ -37,20 +37,21 @@ struct twl_clone_server {
 
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_mgr;
-	enum twl_clone_cursor_mode cursor_mode;
 	struct wl_listener cursor_motion;
 	struct wl_listener cursor_motion_absolute;
 	struct wl_listener cursor_frame;
 
-	struct wlr_output_layout *output_layout;
-	struct wl_list outputs;
-	struct wl_listener new_output;
-	
 	struct wlr_seat *seat;
 	struct wl_listener new_input;
 	struct wl_listener request_cursor;
 	struct wl_listener request_set_selection;
 	struct wl_list keyboards;
+	enum twl_clone_cursor_mode cursor_mode;
+	struct twl_clone_toplevel *grabbed_toplevel;
+
+	struct wlr_output_layout *output_layout;
+	struct wl_list outputs;
+	struct wl_listener new_output;
 };
 
 struct twl_clone_output {
@@ -125,13 +126,30 @@ static void output_frame(struct wl_listener *listener, void *data) {
 	struct twl_clone_output *output = wl_container_of(listener, output, frame);
 	struct wlr_output *wlr_output = output->wlr_output;
 
-	// TODO: scene graph
 	// wlr_log(WLR_INFO, "frame");
+	
+	struct wlr_scene *scene = output->server->scene;
+	struct wlr_scene_output *scene_output = wlr_scene_get_scene_output(
+			scene, output->wlr_output);
+
+	wlr_scene_output_commit(scene_output, NULL);
+
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 	struct wlr_render_pass *pass = wlr_output_begin_render_pass(wlr_output, &state, NULL);
+
 	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
-		.box = { .width = wlr_output->width, .height = wlr_output->height },
+		.box = { .width = wlr_output->width, .height = wlr_output->height, },
+		.color = {
+			.r = .2f,
+			.g = .2f,
+			.b = .3f,
+			.a = 1.0f,
+		},
+	});
+	wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+		.box = { .x = output->server->cursor->x, .y = output->server->cursor->y, 
+			 .width = 4.f, .height = 4.f, },
 		.color = {
 			.r = .5f,
 			.g = .8f,
@@ -144,6 +162,10 @@ static void output_frame(struct wl_listener *listener, void *data) {
 
 	wlr_output_commit_state(wlr_output, &state);
 	wlr_output_state_finish(&state);
+
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	wlr_scene_output_send_frame_done(scene_output, &now);
 }
 
 static void output_request_state(struct wl_listener *listener, void *data) {
@@ -205,13 +227,16 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 
 	wl_list_insert(&server->outputs, &output->link);
 
-
-	// TODO: Add scene graph setupp here.
-
-	// struct wlr_output_layout_output *l_output = wlr_output_layout_add_auto(server->output_layout, wlr_output);
-	// struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
-	// wlr_scene_output_layout_add_output(server->scene_layout, l_output, scene_output);
+	struct wlr_output_layout_output *l_output = wlr_output_layout_add_auto(server->output_layout, wlr_output);
+	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
+	wlr_scene_output_layout_add_output(server->scene_layout, l_output, scene_output);
 }
+
+static void reset_cursor_mode(struct twl_clone_server *server) {
+	server->cursor_mode = TWL_CLONE_CURSOR_PASSTHROUGH;
+	server->grabbed_toplevel = NULL;
+}
+
 
 static void process_cursor_motion(struct twl_clone_server *server, uint32_t time) {
 	struct wlr_seat *seat = server->seat;
@@ -225,20 +250,23 @@ static void server_cursor_motion(struct wl_listener *listener, void *data) {
 	struct twl_clone_server *server = wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_event *event = data;
 
-	// wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
-	// process_cursor_motion(server, event->time_msec);
+	wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
+	process_cursor_motion(server, event->time_msec);
 	// wlr_log(WLR_INFO, "r pos %f, %f\n", event->delta_x, event->delta_y);
 	printf("r pos %f, %f\n", event->delta_x, event->delta_y);
+	printf("a pos %f, %f\n", server->cursor->x, server->cursor->y);
 	// TODO: actually move the cursor maybe
 }
 static void server_cursor_motion_absolute(struct wl_listener *listener, void *data) {
 	// Triggered whenever an absolute motion event happens (LIKE IN A WAYLAND BACKEND!!!)
 	struct twl_clone_server *server = wl_container_of(listener, server, cursor_motion);
 	struct wlr_pointer_motion_absolute_event *event = data;
+
+	printf("a pos %f, %f\n", event->x, event->y);
+
 	wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
 
 	// wlr_log(WLR_INFO, "a pos %f, %f\n", event->x, event->y);
-	printf("a pos %f, %f\n", event->x, event->y);
 	// process_cursor_motion(server, event->time_msec);
 	// TODO: actually move the cursor maybe
 }
@@ -316,16 +344,42 @@ static void seat_request_set_selection(struct wl_listener *listener, void *data)
 
 
 static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
+	// Called when the toplevel is mapped (visible, ready to be shown)
 	struct twl_clone_toplevel *toplevel = wl_container_of(listener, toplevel, map);
 
 	wl_list_insert(&toplevel->server->toplevels, &toplevel->link);
 	focus_toplevel(toplevel, toplevel->xdg_toplevel->base->surface);
 }
 
-// TODO: PICK UP FROM HERE
-static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {} 
-static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {} 
-static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {} 
+static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
+	// Called when the toplevel is unmapped (hidden/no longer shown)
+	struct twl_clone_toplevel *toplevel = wl_container_of(listener, toplevel, unmap);
+
+	if (toplevel == toplevel->server->grabbed_toplevel) {
+		reset_cursor_mode(toplevel->server);
+	}
+
+	wl_list_remove(&toplevel->link);
+} 
+
+static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
+	struct twl_clone_toplevel *toplevel = wl_container_of(listener, toplevel, commit);
+
+	if (toplevel->xdg_toplevel->base->initial_commit) {
+		wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
+	}
+} 
+
+static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
+	struct twl_clone_toplevel *toplevel = wl_container_of(listener, toplevel, destroy);
+
+	wl_list_remove(&toplevel->map.link);
+	wl_list_remove(&toplevel->unmap.link);
+	wl_list_remove(&toplevel->commit.link);
+	wl_list_remove(&toplevel->destroy.link);
+
+	free(toplevel);
+} 
 
 static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	struct twl_clone_server *server = wl_container_of(listener, server, new_xdg_toplevel);
@@ -462,8 +516,8 @@ int main(int argc, char *argv[]) {
 	server.cursor_mode = TWL_CLONE_CURSOR_PASSTHROUGH;
 	server.cursor_motion.notify = server_cursor_motion;
 	wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
-	server.cursor_motion_absolute.notify = server_cursor_motion_absolute;
-	wl_signal_add(&server.cursor->events.motion_absolute, &server.cursor_motion_absolute);
+	// server.cursor_motion_absolute.notify = server_cursor_motion_absolute;
+	// wl_signal_add(&server.cursor->events.motion_absolute, &server.cursor_motion_absolute);
 	server.cursor_frame.notify = server_cursor_frame;
 	wl_signal_add(&server.cursor->events.frame, &server.cursor_frame);
 
